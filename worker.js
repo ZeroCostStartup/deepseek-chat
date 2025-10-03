@@ -10,25 +10,27 @@
  *   - GROQ_API_KEY
  *   - JWT_SECRET (32+ chars)
  *
- * IMPORTANT: set this to your actual Pages origin (no trailing slash):
- *   const PAGES_ORIGIN = "https://your-project.pages.dev";
- * ======================================================================= */
+
+ * ======================================================================
+ * IMPORTANT!!! Update PAGES_ORIGIN with your own pages address (avoid using trailing slash)
+ * ======================================================================
+ */
 
 const MODEL_ID = "llama-3.1-8b-instant";
 const TEMPERATURE = 0.6;
 const TOP_P = 0.95;
 const MAX_COMPLETION_TOKENS = 4096;
 
-// <<<---------------------- SET THIS ---------------------->>>
-const PAGES_ORIGIN = "https://YOUR-PAGES-PROJECT.pages.dev"; // e.g. "https://llamaassistantchat.pages.dev"
-// <<<---------------------- SET THIS ---------------------->>>
+/* ======================= CORS ORIGIN  =======================
+  */
+const PAGES_ORIGIN = "https://your-project-name.pages.dev"; //avoid using trailing slash in URL
 
 /* ============================== CORS =============================== */
 function corsPreflight() {
   return new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": PAGES_ORIGIN,
+      "Access-Control-Allow-Origin": PAGES_ORIGIN, 
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Id",
       "Access-Control-Max-Age": "86400",
@@ -41,22 +43,34 @@ function corsPreflight() {
 function withCorsHeaders(headers = {}) {
   return {
     ...headers,
-    "Access-Control-Allow-Origin": PAGES_ORIGIN,
+    "Access-Control-Allow-Origin": PAGES_ORIGIN, // ← exact match
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Expose-Headers": "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Session-Id",
     "Vary": "Origin",
   };
 }
 
-/* ===================== CSRF allowlist (NEW) ====================== */
-/** Accept requests only if they come from your Pages app.
- *  Works with 'strict-origin-when-cross-origin' (checks Origin OR Referer).
- */
+/* ===================== CSRF allowlist ======================
+   Normalize Origin/Referer to compare without trailing slash.
+*/
+function _normalizeOrigin(u) {
+  try {
+    if (!u) return "";
+    const url = new URL(u);
+    return `${url.protocol}//${url.host}`; // no trailing slash, no path
+  } catch {
+    return "";
+  }
+}
+/** Accept requests only if they come from your Pages app. */
 function isFromPages(request) {
-  const origin = request.headers.get("Origin") || "";
-  const referer = request.headers.get("Referer") || "";
-  if (origin === PAGES_ORIGIN) return true;
-  if (referer && referer.startsWith(PAGES_ORIGIN)) return true;
+  const originHdr = request.headers.get("Origin") || "";
+  const refererHdr = request.headers.get("Referer") || "";
+  const reqOrigin = _normalizeOrigin(originHdr);
+  const refOrigin = _normalizeOrigin(refererHdr);
+  const allowed = _normalizeOrigin(PAGES_ORIGIN);
+  if (reqOrigin && reqOrigin === allowed) return true;
+  if (refOrigin && refOrigin === allowed) return true;
   return false;
 }
 function csrfGuard(request) {
@@ -259,7 +273,6 @@ export default {
         );
       }
       if (pathname === "/api/health") {
-        // health may be probed; still set CORS
         return cachedJSON(
           request,
           async () => ({ status: "ok", cached_at_utc: new Date().toISOString() }),
@@ -268,7 +281,7 @@ export default {
       }
     }
 
-    // ---------- JWT mint (NO Turnstile) ----------
+    // ---------- JWT mint ----------
     if (pathname === "/api/token" && request.method === "POST") {
       const csrf = csrfGuard(request); if (csrf) return csrf;
 
