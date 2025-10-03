@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- =====================================================================
+       Deepseek V3.1 Assistant — JWT-only, localStorage DAILY COUNTER (persists
+       across reloads), live THINKING phase shown (+ collapsible afterwards)
+       ===================================================================== -->
+
+  <!-- SEO -->
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Deepseek V3.1 Assistant — Fast, Lightweight Reasoning Chat (10 messages/day)</title>
+  <meta name="description" content="Deepseek V3.1 Assistant is a lightweight, browser-based reasoning chat. It shows the model’s live thinking phase, collapses it after the final answer, and enforces a daily message limit that persists across reloads."/>
+  <meta name="keywords" content="Deepseek V3.1, deepseek-V3.1, reasoning model, AI assistant, coding, Cloudflare Workers, streaming chat"/>
+
+  <meta property="og:title" content="Deepseek V3.1 Assistant — Fast, Lightweight Reasoning Chat"/>
+  <meta property="og:description" content="A no-signup, streaming AI assistant for reasoning and code help. Thinking is visible during generation and collapsible after the answer. Daily limit persists across reloads."/>
+  <meta property="og:type" content="website"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+
+  <style>
+    :root{
+      --bg:#0b172a;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--acc:#15a34a;
+      --green:#10b981;--yellow:#f59e0b;--red:#ef4444;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;
+      display:flex;flex-direction:column
+    }
+    header{
+      padding:18px 20px;background:#0f1b2f;border-bottom:1px solid #1f2937;
+      display:flex;align-items:center;justify-content:space-between;gap:12px
+    }
+    header h1{margin:0;font-size:18px;font-weight:600}
+
+    /* Top-right remaining counter badge */
+    .quota-badge{
+      position:fixed; top:14px; right:14px;
+      width:40px; height:40px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      font-weight:800; font-size:14px; color:#fff;
+      box-shadow:0 2px 10px rgba(0,0,0,.35);
+      user-select:none;
+      background:#374151; border:1px solid #4b5563; z-index:20
+    }
+    .q-green{background:var(--green); border-color:#0e8e6c}
+    .q-yellow{background:var(--yellow); border-color:#c27f07}
+    .q-red{background:var(--red); border-color:#b91c1c}
+
+    main{flex:1;display:flex;flex-direction:column;max-width:900px;width:100%;margin:0 auto}
+    .intro{
+      padding:18px 20px; line-height:1.6; color:var(--muted); font-size:14px;
+      border-bottom:1px solid #1f2937; background:#0e1a2f
+    }
+    .intro h2{margin:0 0 6px; color:#e5e7eb; font-size:16px}
+    .intro p{margin:6px 0}
+
+    #log{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+    .bubble{max-width:75%;padding:12px 14px;border-radius:14px;line-height:1.45;white-space:pre-wrap}
+    .user{align-self:flex-end;background:#1f2937}
+    .assistant{align-self:flex-start;background:#0a4f2a33;border:1px solid #174e37}
+
+    /* Thinking box — only shows blue dot while active */
+    details.thinking{
+      align-self:flex-start;background:#16233e;border:1px dashed #2b3d63;
+      border-radius:14px;padding:10px 12px
+    }
+    details.thinking summary{cursor:pointer;outline:none;list-style:none}
+    details.thinking summary::-webkit-details-marker{display:none}
+    details.thinking summary .dot{display:none}
+    details.thinking[data-active="1"] summary .dot{
+      display:inline-block; width:6px; height:6px; margin-left:6px;
+      border-radius:50%; background:#7aa2ff; animation:pulse 1s infinite ease-in-out; vertical-align:middle
+    }
+    @keyframes pulse{0%{opacity:.3}50%{opacity:1}100%{opacity:.3}}
+    .think-content{margin-top:8px;white-space:pre-wrap;color:#cbd5e1}
+
+    form{display:flex;gap:10px;padding:16px;border-top:1px solid #1f2937;background:var(--panel)}
+    input[type="text"]{flex:1;padding:12px 14px;border-radius:10px;border:1px solid #374151;background:#0b1220;color:#e5e7eb}
+    button{padding:12px 16px;border:0;border-radius:10px;background:var(--acc);color:#fff;font-weight:600;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+
+    #err{color:#fca5a5;padding:10px 20px;white-space:pre-wrap}
+
+    /* modal for quota exhausted */
+    .modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:50}
+    .modal{width:min(90%, 520px); background:#0f172a; border:1px solid #1f2937; border-radius:12px; padding:24px; box-shadow:0 20px 50px rgba(0,0,0,.5); text-align:center}
+    .modal h2{margin:0 0 10px; font-size:20px}
+    .modal p{color:#9ca3af; margin:0 0 18px}
+    .modal button{background:#334155}
+    .modal button:hover{background:#3f4a5f}
+  </style>
+</head>
+<body>
+  <header><h1>Deepseek V3.1 Assistant</h1></header>
+
+  <div id="quotaBadge" class="quota-badge">10</div>
+
+  <main>
+    <section class="intro" aria-label="About">
+      <h2>What is Deepseek V3.1 Assistant?</h2>
+      <p>
+        A fast, lightweight chat for reasoning and code help. The model may “think” first
+        (emitting a <code>&lt;think&gt;…&lt;/think&gt;</code> phase), then deliver the final answer.
+        You’ll see that thinking live, and it collapses automatically after the answer begins —
+        with a toggle to reopen it any time.
+      </p>
+    </section>
+
+    <div id="log" aria-live="polite"></div>
+    <div id="err" role="status"></div>
+
+    <form id="chatForm" aria-label="Chat input">
+      <input id="msg" type="text" placeholder="Ask anything…" autocomplete="off" required disabled />
+      <button id="sendBtn" type="submit" disabled>Send</button>
+    </form>
+  </main>
+
+  <div id="quotaModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="qTitle">
+    <div class="modal">
+      <h2 id="qTitle">Daily limit reached</h2>
+      <p>That’s it for now. You can try again after the daily limit resets. The limit persists across reloads.</p>
+      <button id="closeModal">OK</button>
+    </div>
+  </div>
+
+  <script>
+    /* ========================= CONFIG ========================= */
+    const API_BASE = "YOUR WORKER ADDRESS"; // ← your Worker URL
+
+    /* =================== CLIENT QUOTA (PERSISTENT) =================== */
+    const DAILY_LIMIT = 10;
+    const LS_REMAINING = "dsV3.1_remaining";
+    const LS_RESET_AT = "dsV3.1_resetAt"; // epoch ms when client counter resets (UTC midnight or server-provided)
+    const ONE_MIN = 60 * 1000;
+
+    function nextUtcMidnightMs() {
+      const now = new Date();
+      const next = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1,
+        0,0,0,0
+      );
+      return next;
+    }
+
+    function readRemaining() {
+      const raw = localStorage.getItem(LS_REMAINING);
+      const n = parseInt(raw ?? "", 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    function readResetAt() {
+      const raw = localStorage.getItem(LS_RESET_AT);
+      const n = parseInt(raw ?? "", 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    function writeRemaining(n) {
+      const v = Math.max(0, Math.min(DAILY_LIMIT, Math.floor(n)));
+      localStorage.setItem(LS_REMAINING, String(v));
+      remaining = v;
+      renderBadge();
+      enforceInputLock();
+    }
+    function writeResetAt(epochMs) {
+      localStorage.setItem(LS_RESET_AT, String(epochMs));
+      scheduleResetTimer(); // reschedule with new time
+    }
+
+    function initQuota() {
+      let rem = readRemaining();
+      let resetAt = readResetAt();
+
+      // First time ever: initialize remaining and next reset
+      if (rem === null || resetAt === null) {
+        rem = DAILY_LIMIT;
+        resetAt = nextUtcMidnightMs();
+        localStorage.setItem(LS_REMAINING, String(rem));
+        localStorage.setItem(LS_RESET_AT, String(resetAt));
+      }
+
+      // If we've passed the reset moment, reset to full and set next midnight
+      if (Date.now() >= resetAt) {
+        rem = DAILY_LIMIT;
+        resetAt = nextUtcMidnightMs();
+        localStorage.setItem(LS_REMAINING, String(rem));
+        localStorage.setItem(LS_RESET_AT, String(resetAt));
+      }
+
+      remaining = rem;
+      renderBadge();
+      enforceInputLock();
+      scheduleResetTimer();
+    }
+
+    // Timer that flips us back to DAILY_LIMIT when reset moment passes
+    let resetTimerId = null;
+    function scheduleResetTimer() {
+      if (resetTimerId) clearTimeout(resetTimerId);
+      const resetAt = readResetAt();
+      if (!resetAt) return;
+
+      const delta = Math.max(1, resetAt - Date.now());
+      resetTimerId = setTimeout(() => {
+        writeRemaining(DAILY_LIMIT);
+        writeResetAt(nextUtcMidnightMs());
+      }, delta);
+    }
+
+    // Sync across tabs: if any tab changes remaining/resetAt, reflect it here
+    window.addEventListener("storage", (e) => {
+      if (e.key === LS_REMAINING || e.key === LS_RESET_AT) {
+        const r = readRemaining();
+        if (r !== null) { remaining = r; renderBadge(); enforceInputLock(); }
+        scheduleResetTimer();
+      }
+    });
+
+    /* ================== Auth (JWT auto, UI) ==================== */
+    let SID = null, JWT = null, JWT_EXP = 0;
+
+    const quotaBadge = document.getElementById('quotaBadge');
+    const modal = document.getElementById('quotaModal');
+    const closeModalBtn = document.getElementById('closeModal');
+    const err = document.getElementById('err');
+    const input = document.getElementById('msg');
+    const sendBtn = document.getElementById('sendBtn');
+    const log = document.getElementById('log');
+    const form = document.getElementById('chatForm');
+
+    let remaining = DAILY_LIMIT; // will be overwritten by initQuota()
+
+    function renderBadge(){
+      quotaBadge.textContent = isFinite(remaining) ? String(remaining) : "–";
+      quotaBadge.classList.remove('q-green','q-yellow','q-red');
+      if (!isFinite(remaining)) return;
+      if (remaining <= 1)      quotaBadge.classList.add('q-red');
+      else if (remaining <= 4) quotaBadge.classList.add('q-yellow');
+      else                     quotaBadge.classList.add('q-green');
+    }
+    function showModal(){ modal.style.display = 'flex'; }
+    function hideModal(){ modal.style.display = 'none'; }
+    closeModalBtn.addEventListener('click', hideModal);
+    modal.addEventListener('click', (e)=>{ if(e.target === modal) hideModal(); });
+
+    function enforceInputLock(){
+      if (remaining <= 0) {
+        input.disabled = true;
+        sendBtn.disabled = true;
+      } else {
+        // only enable if token is present; bootstrap will also check JWT later
+        input.disabled = false;
+        sendBtn.disabled = false;
+      }
+    }
+
+    function addBubble(role, text, extraClass){
+      const wrap = document.createElement('div');
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble ' + (role === 'user' ? 'user' : 'assistant') + (extraClass ? (' ' + extraClass) : '');
+      bubble.textContent = text || '';
+      wrap.appendChild(bubble);
+      log.appendChild(wrap);
+      log.scrollTop = log.scrollHeight;
+      return bubble;
+    }
+
+    // Thinking box with active/inactive state
+    function addThinkingBox() {
+      const details = document.createElement('details');
+      details.className = 'thinking';
+      details.dataset.active = "0";
+      details.open = false;
+
+      const summary = document.createElement('summary');
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = 'Show thinking';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+
+      summary.appendChild(label);
+      summary.appendChild(dot);
+
+      const content = document.createElement('div');
+      content.className = 'think-content';
+
+      details.appendChild(summary);
+      details.appendChild(content);
+
+      const wrap = document.createElement('div');
+      wrap.appendChild(details);
+      log.appendChild(wrap);
+      log.scrollTop = log.scrollHeight;
+
+      function setActive(isActive) {
+        if (isActive) {
+          details.dataset.active = "1";
+          label.textContent = 'Thinking…';
+          if (!details.open) details.open = true;
+        } else {
+          details.dataset.active = "0";
+          label.textContent = 'Show thinking';
+          details.open = false;
+        }
+      }
+
+      return { details, content, label, dot, setActive };
+    }
+
+    function jwtValid(){ return JWT && (Date.now()/1000 < (JWT_EXP - 5)); }
+    async function fetchToken(){
+      const r = await fetch(`${API_BASE}/api/token`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        credentials:"include",
+        body: JSON.stringify({})
+      });
+      if (!r.ok) throw new Error(`Token endpoint error (${r.status}): ${await r.text().catch(()=> '')||'unknown'}`);
+      const js = await r.json();
+      if (!js?.token || !js?.sid || !js?.exp) throw new Error("Token response missing fields");
+      SID = js.sid; JWT = js.token; JWT_EXP = js.exp; return js;
+    }
+    async function ensureJWT(){ if (jwtValid()) return true; try { await fetchToken(); return true; } catch(e){ err.textContent = e.message||"Could not obtain token"; enforceInputLock(); return false; } }
+    function scheduleAutoRefresh(){
+      const ms = Math.max(1, (JWT_EXP - Math.floor(Date.now()/1000) - 60) * 1000);
+      setTimeout(async ()=>{ try { await fetchToken(); scheduleAutoRefresh(); } catch {} }, ms);
+    }
+
+    // Bootstrap: initialize quota (PERSISTENT), then JWT
+    (async function bootstrap(){
+      initQuota(); // <-- NO reset on reload; honors stored remaining/resetAt
+      try { await fetchToken(); scheduleAutoRefresh(); } catch(e){ err.textContent = e.message||'Could not start'; }
+      enforceInputLock();
+    })();
+
+    // Hard-block send attempts at zero (and explain)
+    input.addEventListener('input', ()=>{
+      if (remaining <= 0) { showModal(); enforceInputLock(); }
+    });
+
+    form.addEventListener('submit', async (e)=>{
+      e.preventDefault(); err.textContent = '';
+
+      if (remaining <= 0) { showModal(); enforceInputLock(); return; }
+      if (!(await ensureJWT())) return;
+
+      const text = input.value.trim(); if (!text) return;
+
+      addBubble('user', text);
+      input.value = ''; input.focus(); sendBtn.disabled = true;
+
+      const thinkBox = addThinkingBox();
+      const answerBubble = addBubble('assistant', '');
+
+      let gotTokens = false;
+      let headerRemaining = null, headerReset = null;
+
+      let inThink = false;
+      let buf = "";
+      let thinkAppend = "";
+      let answerAppend = "";
+
+      function flushToDOM() {
+        if (thinkAppend) {
+          thinkBox.content.textContent += thinkAppend;
+          thinkAppend = "";
+        }
+        if (answerAppend) {
+          answerBubble.textContent += answerAppend;
+          answerAppend = "";
+        }
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function consumeBuffer() {
+        while (buf.length) {
+          if (!inThink) {
+            const open = buf.indexOf("<think>");
+            const close = buf.indexOf("</think>");
+            if (open === -1 && close === -1) {
+              answerAppend += buf;
+              buf = "";
+              break;
+            }
+            if (open !== -1 && (close === -1 || open < close)) {
+              if (open > 0) answerAppend += buf.slice(0, open);
+              buf = buf.slice(open + "<think>".length);
+              inThink = true;
+              thinkBox.setActive(true);
+              continue;
+            }
+            if (close !== -1 && (open === -1 || close < open)) {
+              buf = buf.slice(close + "</think>".length);
+              inThink = false;
+              thinkBox.setActive(false);
+              continue;
+            }
+          } else {
+            const close = buf.indexOf("</think>");
+            if (close === -1) {
+              thinkAppend += buf;
+              buf = "";
+              break;
+            }
+            if (close > 0) thinkAppend += buf.slice(0, close);
+            buf = buf.slice(close + "</think>".length);
+            inThink = false;
+            thinkBox.setActive(false);
+            continue;
+          }
+        }
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/api/chat`, {
+          method:'POST',
+          headers:{
+            'Content-Type':'application/json',
+            'Authorization':`Bearer ${JWT}`,
+            'X-Session-Id': SID || ''
+          },
+          credentials:"include",
+          body: JSON.stringify({ message: text })
+        });
+
+        const rlRemain = res.headers.get('X-RateLimit-Remaining');
+        const rlReset  = res.headers.get('X-RateLimit-Reset');
+        headerRemaining = rlRemain != null ? parseInt(rlRemain, 10) : null;
+        headerReset     = rlReset  != null ? parseInt(rlReset, 10)  : null;
+
+        if (res.status === 401) throw new Error('Unauthorized');
+        if (res.status === 429) { writeRemaining(0); showModal(); return; }
+        if (!res.body) throw new Error('No stream from server');
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+
+        const softFlushInterval = setInterval(flushToDOM, 150); // smoother UI
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream:true });
+            if (chunk && chunk.trim()) gotTokens = true;
+
+            buf += chunk;
+            consumeBuffer();
+          }
+        } finally {
+          clearInterval(softFlushInterval);
+          flushToDOM();
+        }
+      } catch (e2) {
+        err.textContent = (e2 && e2.message) || 'Request failed';
+      } finally {
+        thinkBox.setActive(false);
+
+        // Update persistent client counter:
+        // Server sends Remaining BEFORE decrement; subtract 1 if we actually streamed tokens.
+        if (headerRemaining !== null && isFinite(headerRemaining)) {
+          const next = Math.max(0, headerRemaining - (gotTokens ? 1 : 0));
+          writeRemaining(next);
+        } else if (gotTokens) {
+          writeRemaining(readRemaining() - 1);
+        }
+
+        // Persist/reset time based on server header if present, else ensure we have a valid next midnight
+        if (headerReset !== null && isFinite(headerReset) && headerReset >= 0) {
+          const newResetAt = Date.now() + headerReset * 1000;
+          // clamp to at least 1 minute in the future to avoid thrash
+          if (newResetAt > Date.now() + ONE_MIN) writeResetAt(newResetAt);
+          else writeResetAt(nextUtcMidnightMs());
+        } else {
+          // ensure LS_RESET_AT exists and is in the future
+          const curResetAt = readResetAt();
+          if (!curResetAt || curResetAt <= Date.now()) writeResetAt(nextUtcMidnightMs());
+        }
+
+        // Re-lock if needed; otherwise re-enable send
+        enforceInputLock();
+      }
+    });
+  </script>
+</body>
+</html>
