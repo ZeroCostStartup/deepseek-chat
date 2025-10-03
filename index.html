@@ -2,19 +2,18 @@
 <html lang="en">
 <head>
   <!-- =====================================================================
-       Llama 3.3 Assistant — JWT-only, localStorage DAILY COUNTER (persists
-       across reloads), live THINKING phase shown (+ collapsible afterwards)
+       NOTE!!! You need to update const API_BASE with your workers URL
        ===================================================================== -->
 
   <!-- SEO -->
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Llama 3.3 70B Assistant — Fast, Lightweight Reasoning Chat (10 messages/day)</title>
-  <meta name="description" content="Llama 3.3 Assistant is a lightweight, browser-based reasoning chat. It shows the model’s live thinking phase, collapses it after the final answer, and enforces a daily message limit that persists across reloads."/>
+  <meta name="description" content="Llama 3.3 Assistant is a lightweight, browser-based chat for reasoning and code help. Daily message limit persists across reloads."/>
   <meta name="keywords" content="Llama 3.3, Llama-3.3 70B, reasoning model, AI assistant, coding, Cloudflare Workers, streaming chat"/>
 
   <meta property="og:title" content="Llama 3.3 Assistant — Fast, Lightweight Reasoning Chat"/>
-  <meta property="og:description" content="A no-signup, streaming AI assistant for reasoning and code help. Thinking is visible during generation and collapsible after the answer. Daily limit persists across reloads."/>
+  <meta property="og:description" content="A no-signup, streaming AI assistant for reasoning and code help. Daily limit persists across reloads."/>
   <meta property="og:type" content="website"/>
   <meta name="twitter:card" content="summary_large_image"/>
 
@@ -63,20 +62,7 @@
     .user{align-self:flex-end;background:#1f2937}
     .assistant{align-self:flex-start;background:#0a4f2a33;border:1px solid #174e37}
 
-    /* Thinking box — only shows blue dot while active */
-    details.thinking{
-      align-self:flex-start;background:#16233e;border:1px dashed #2b3d63;
-      border-radius:14px;padding:10px 12px
-    }
-    details.thinking summary{cursor:pointer;outline:none;list-style:none}
-    details.thinking summary::-webkit-details-marker{display:none}
-    details.thinking summary .dot{display:none}
-    details.thinking[data-active="1"] summary .dot{
-      display:inline-block; width:6px; height:6px; margin-left:6px;
-      border-radius:50%; background:#7aa2ff; animation:pulse 1s infinite ease-in-out; vertical-align:middle
-    }
-    @keyframes pulse{0%{opacity:.3}50%{opacity:1}100%{opacity:.3}}
-    .think-content{margin-top:8px;white-space:pre-wrap;color:#cbd5e1}
+    /* UPDATED: removed styles for the "thinking" box UI */
 
     form{display:flex;gap:10px;padding:16px;border-top:1px solid #1f2937;background:var(--panel)}
     input[type="text"]{flex:1;padding:12px 14px;border-radius:10px;border:1px solid #374151;background:#0b1220;color:#e5e7eb}
@@ -103,10 +89,8 @@
     <section class="intro" aria-label="About">
       <h2>What is Llama 3.3 Assistant?</h2>
       <p>
-        A fast, lightweight chat for reasoning and code help. The model may “think” first
-        (emitting a <code>&lt;think&gt;…&lt;/think&gt;</code> phase), then deliver the final answer.
-        You’ll see that thinking live, and it collapses automatically after the answer begins —
-        with a toggle to reopen it any time.
+        A fast, lightweight chat for reasoning and code help. The assistant streams answers in real time.
+        Your daily message limit persists across reloads.
       </p>
     </section>
 
@@ -268,48 +252,7 @@
       return bubble;
     }
 
-    // Thinking box with active/inactive state
-    function addThinkingBox() {
-      const details = document.createElement('details');
-      details.className = 'thinking';
-      details.dataset.active = "0";
-      details.open = false;
-
-      const summary = document.createElement('summary');
-      const label = document.createElement('span');
-      label.className = 'label';
-      label.textContent = 'Show thinking';
-      const dot = document.createElement('span');
-      dot.className = 'dot';
-
-      summary.appendChild(label);
-      summary.appendChild(dot);
-
-      const content = document.createElement('div');
-      content.className = 'think-content';
-
-      details.appendChild(summary);
-      details.appendChild(content);
-
-      const wrap = document.createElement('div');
-      wrap.appendChild(details);
-      log.appendChild(wrap);
-      log.scrollTop = log.scrollHeight;
-
-      function setActive(isActive) {
-        if (isActive) {
-          details.dataset.active = "1";
-          label.textContent = 'Thinking…';
-          if (!details.open) details.open = true;
-        } else {
-          details.dataset.active = "0";
-          label.textContent = 'Show thinking';
-          details.open = false;
-        }
-      }
-
-      return { details, content, label, dot, setActive };
-    }
+    // UPDATED: removed addThinkingBox() and all UI related to showing thinking
 
     function jwtValid(){ return JWT && (Date.now()/1000 < (JWT_EXP - 5)); }
     async function fetchToken(){
@@ -353,22 +296,18 @@
       addBubble('user', text);
       input.value = ''; input.focus(); sendBtn.disabled = true;
 
-      const thinkBox = addThinkingBox();
+      // UPDATED: only the final answer bubble remains
       const answerBubble = addBubble('assistant', '');
 
       let gotTokens = false;
       let headerRemaining = null, headerReset = null;
 
+      // UPDATED: strip <think>…</think> from the stream instead of rendering it
       let inThink = false;
       let buf = "";
-      let thinkAppend = "";
       let answerAppend = "";
 
       function flushToDOM() {
-        if (thinkAppend) {
-          thinkBox.content.textContent += thinkAppend;
-          thinkAppend = "";
-        }
         if (answerAppend) {
           answerBubble.textContent += answerAppend;
           answerAppend = "";
@@ -376,41 +315,40 @@
         log.scrollTop = log.scrollHeight;
       }
 
+      // UPDATED: robust parser that removes all <think>…</think> segments, preserving only visible answer text
       function consumeBuffer() {
         while (buf.length) {
-          if (!inThink) {
-            const open = buf.indexOf("<think>");
-            const close = buf.indexOf("</think>");
-            if (open === -1 && close === -1) {
+          if (inThink) {
+            const closeIdx = buf.indexOf("</think>");
+            if (closeIdx === -1) {
+              // keep only a small tail to catch partial closing tag across chunk boundaries
+              buf = buf.slice(Math.max(0, buf.length - 8));
+              break;
+            }
+            buf = buf.slice(closeIdx + 8);
+            inThink = false;
+            continue;
+          } else {
+            const openIdx = buf.indexOf("<think>");
+            const closeIdx = buf.indexOf("</think>");
+            if (openIdx === -1 && closeIdx === -1) {
+              // no markers — everything is visible
               answerAppend += buf;
               buf = "";
               break;
             }
-            if (open !== -1 && (close === -1 || open < close)) {
-              if (open > 0) answerAppend += buf.slice(0, open);
-              buf = buf.slice(open + "<think>".length);
+            if (closeIdx !== -1 && (openIdx === -1 || closeIdx < openIdx)) {
+              // stray close without an open — skip it
+              buf = buf.slice(closeIdx + 8);
+              continue;
+            }
+            if (openIdx !== -1 && (closeIdx === -1 || openIdx < closeIdx)) {
+              // emit visible part before <think>, then enter think mode
+              if (openIdx > 0) answerAppend += buf.slice(0, openIdx);
+              buf = buf.slice(openIdx + 7);
               inThink = true;
-              thinkBox.setActive(true);
               continue;
             }
-            if (close !== -1 && (open === -1 || close < open)) {
-              buf = buf.slice(close + "</think>".length);
-              inThink = false;
-              thinkBox.setActive(false);
-              continue;
-            }
-          } else {
-            const close = buf.indexOf("</think>");
-            if (close === -1) {
-              thinkAppend += buf;
-              buf = "";
-              break;
-            }
-            if (close > 0) thinkAppend += buf.slice(0, close);
-            buf = buf.slice(close + "</think>".length);
-            inThink = false;
-            thinkBox.setActive(false);
-            continue;
           }
         }
       }
@@ -457,8 +395,6 @@
       } catch (e2) {
         err.textContent = (e2 && e2.message) || 'Request failed';
       } finally {
-        thinkBox.setActive(false);
-
         // Update persistent client counter:
         // Server sends Remaining BEFORE decrement; subtract 1 if we actually streamed tokens.
         if (headerRemaining !== null && isFinite(headerRemaining)) {
